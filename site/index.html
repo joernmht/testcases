@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Motor Visualisierung</title>
+<style>
+  :root {
+    --bg1: #1b2330; --bg2: #07090d; --panel: rgba(16, 20, 28, 0.82);
+    --text: #e6ebf2; --muted: #93a0b3; --accent: #ff9a3c; --border: rgba(255,255,255,0.1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 50% 30%, var(--bg1), var(--bg2));
+    color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  canvas { display: block; }
+  #panel {
+    position: absolute; top: 16px; left: 16px; width: 290px; max-width: calc(100vw - 32px);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px; backdrop-filter: blur(8px);
+  }
+  h1 { font-size: 17px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  label { display: flex; align-items: center; gap: 8px; margin: 6px 0; cursor: pointer; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); }
+  button {
+    background: var(--accent); color: #1a1006; border: 0; border-radius: 6px;
+    padding: 6px 12px; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  td { padding: 3px 4px; border-top: 1px solid var(--border); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  .mono { font-variant-numeric: tabular-nums; }
+  #hint { position: absolute; bottom: 12px; right: 16px; color: var(--muted); font-size: 12px; }
+  #toggle { display: none; }
+  @media (max-width: 600px) {
+    #panel { top: auto; bottom: 16px; padding: 10px 12px; }
+    #panel.collapsed .body { display: none; }
+    #toggle { display: inline-block; }
+    #hint { display: none; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="panel">
+  <div class="row" style="margin-top:0">
+    <h1>Reihenvierzylinder</h1>
+    <button id="toggle" class="secondary">▾</button>
+  </div>
+  <div class="body">
+    <div class="sub">4-Takt-Ottomotor · Zündfolge 1-3-4-2</div>
+    <div class="row"><span>Drehzahl</span><span class="mono"><span id="rpmVal">60</span> U/min</span></div>
+    <input id="rpm" type="range" min="0" max="1200" step="5" value="60">
+    <div class="row">
+      <span>Kurbelwinkel: <span id="angle" class="mono">0°</span></span>
+      <span>
+        <button id="step" class="secondary" title="+10°">+10°</button>
+        <button id="play">Pause</button>
+      </span>
+    </div>
+    <label><input id="showBlock" type="checkbox" checked> Motorblock anzeigen</label>
+    <label><input id="showGas" type="checkbox" checked> Gasfüllung anzeigen</label>
+    <label><input id="autoRotate" type="checkbox"> Kamera drehen</label>
+    <table id="phases"></table>
+  </div>
+</div>
+<div id="hint">Ziehen: drehen · Scrollen: zoomen · Rechtsklick: verschieben</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------- Renderer / Szene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(6.5, 4.5, 7.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.1, 0);
+controls.enableDamping = true;
+controls.autoRotateSpeed = 1.2;
+
+scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x20160c, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(5, 9, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5 });
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.CircleGeometry(9, 64), new THREE.ShadowMaterial({ opacity: 0.35 }));
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -1.25;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- Materialien ----------
+const steel   = new THREE.MeshStandardMaterial({ color: 0xb8bec8, metalness: 0.9, roughness: 0.28 });
+const darkSteel = new THREE.MeshStandardMaterial({ color: 0x5a6170, metalness: 0.85, roughness: 0.4 });
+const alu     = new THREE.MeshStandardMaterial({ color: 0xd9dde3, metalness: 0.7, roughness: 0.35 });
+const rodMat  = new THREE.MeshStandardMaterial({ color: 0x8c96a8, metalness: 0.9, roughness: 0.3 });
+const brass   = new THREE.MeshStandardMaterial({ color: 0xc8a050, metalness: 0.9, roughness: 0.3 });
+const intakeMat  = new THREE.MeshStandardMaterial({ color: 0x4f8fe0, metalness: 0.6, roughness: 0.35 });
+const exhaustMat = new THREE.MeshStandardMaterial({ color: 0xe0623a, metalness: 0.6, roughness: 0.35 });
+const glass = (color, opacity) => new THREE.MeshPhysicalMaterial({
+  color, metalness: 0.1, roughness: 0.2, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+});
+
+const mesh = (geo, mat, parent, shadow = true) => {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = shadow; m.receiveShadow = shadow;
+  parent?.add(m);
+  return m;
+};
+// Zylindergeometrie mit Achse entlang x
+const xCyl = (r, len, seg = 32) => new THREE.CylinderGeometry(r, r, len, seg).rotateZ(Math.PI / 2);
+
+// ---------- Abmessungen ----------
+const R = 0.45;            // Kurbelradius (halber Hub)
+const L = 1.5;             // Pleuellänge
+const BORE = 0.42;         // Kolbenradius
+const SPACING = 1.1;
+const HEAD_BOTTOM = 2.42;
+const PISTON_TOP = 0.36;   // Kolbenboden über Kolbenbolzen
+const CYL_X = [-1.5, -0.5, 0.5, 1.5].map(v => v * SPACING);
+// Zündfolge 1-3-4-2 → Versatz im 720°-Arbeitsspiel
+const FIRE_OFFSET = [0, 540, 180, 360];
+
+const engine = new THREE.Group();
+scene.add(engine);
+
+// ---------- Kurbelwelle ----------
+const crank = new THREE.Group();
+engine.add(crank);
+for (let i = 0; i <= 4; i++) mesh(xCyl(0.17, 0.32), steel, crank).position.x = (i - 2) * SPACING;
+// Riemenscheibe vorne, Schwungrad hinten
+mesh(xCyl(0.17, 3 * SPACING + 1.4), steel, crank).scale.set(1, 0.6, 0.6);
+const pulley = mesh(xCyl(0.32, 0.18), darkSteel, crank); pulley.position.x = -2.85;
+const flywheel = mesh(xCyl(0.95, 0.12, 64), darkSteel, crank); flywheel.position.x = 2.75;
+for (let k = 0; k < 6; k++) {
+  const b = mesh(xCyl(0.07, 0.14, 16), steel, flywheel);
+  const a = k / 6 * Math.PI * 2;
+  b.position.set(0, Math.cos(a) * 0.6, Math.sin(a) * 0.6);
+}
+
+const webGeo = new THREE.BoxGeometry(0.1, R + 0.62, 0.5);
+webGeo.translate(0, (R + 0.62) / 2 - 0.42, 0);
+const cwGeo = new THREE.CylinderGeometry(0.48, 0.48, 0.1, 32, 1, false, Math.PI / 2, Math.PI).rotateZ(Math.PI / 2);
+CYL_X.forEach((x, i) => {
+  const throwGroup = new THREE.Group();
+  throwGroup.position.x = x;
+  throwGroup.rotation.x = -THREE.MathUtils.degToRad(FIRE_OFFSET[i]);
+  crank.add(throwGroup);
+  for (const s of [-1, 1]) {
+    mesh(webGeo, steel, throwGroup).position.x = s * 0.25;
+    const cw = mesh(cwGeo, darkSteel, throwGroup);
+    cw.position.set(s * 0.25, -0.12, 0);
+  }
+  const pin = mesh(xCyl(0.14, 0.42), steel, throwGroup);
+  pin.position.y = R;
+});
+
+// ---------- Kolben + Pleuel ----------
+const pistons = [], rods = [];
+const ringGeo = new THREE.TorusGeometry(BORE + 0.002, 0.012, 8, 48).rotateX(Math.PI / 2);
+CYL_X.forEach((x) => {
+  const piston = new THREE.Group();
+  piston.position.x = x;
+  const body = mesh(new THREE.CylinderGeometry(BORE, BORE, 0.56, 48), alu, piston);
+  body.position.y = PISTON_TOP - 0.28;
+  for (let k = 0; k < 3; k++) mesh(ringGeo, darkSteel, piston, false).position.y = PISTON_TOP - 0.06 - k * 0.07;
+  mesh(xCyl(0.08, 0.7), steel, piston);
+  engine.add(piston);
+  pistons.push(piston);
+
+  const rod = new THREE.Group();
+  rod.position.x = x;
+  const shaft = mesh(new THREE.BoxGeometry(0.1, L - 0.3, 0.16), rodMat, rod);
+  shaft.position.y = L / 2;
+  mesh(xCyl(0.23, 0.14), rodMat, rod);
+  mesh(xCyl(0.14, 0.14), rodMat, rod).position.y = L;
+  engine.add(rod);
+  rods.push(rod);
+});
+
+// ---------- Gasfüllung im Brennraum ----------
+const gases = CYL_X.map((x) => {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(BORE - 0.01, BORE - 0.01, 1, 40),
+    new THREE.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.35, depthWrite: false }));
+  m.position.x = x;
+  engine.add(m);
+  return m;
+});
+
+// ---------- Zylinderkopf: Ventile, Nockenwellen, Zündkerzen ----------
+const VALVE_Z = 0.2, CAM_Y = 3.15, MAX_LIFT = 0.14;
+const valves = [];
+const flames = [];
+function makeValve(mat) {
+  const g = new THREE.Group();
+  const disc = mesh(new THREE.CylinderGeometry(0.15, 0.06, 0.05, 32), mat, g);
+  disc.position.y = 0.025;
+  const stem = mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.6, 12), steel, g);
+  stem.position.y = 0.33;
+  const spring = mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 20), darkSteel, g);
+  spring.position.y = 0.62;
+  return g;
+}
+CYL_X.forEach((x, i) => {
+  const intake = makeValve(intakeMat), exhaust = makeValve(exhaustMat);
+  intake.position.set(x, HEAD_BOTTOM, -VALVE_Z);
+  exhaust.position.set(x, HEAD_BOTTOM, VALVE_Z);
+  engine.add(intake, exhaust);
+  valves.push({ intake, exhaust });
+
+  const plug = new THREE.Group();
+  plug.position.set(x, HEAD_BOTTOM, 0);
+  mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.25, 12), brass, plug).position.y = 0.12;
+  const insulator = mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.45, 16),
+    new THREE.MeshStandardMaterial({ color: 0xf2f2ee, roughness: 0.5 }), plug);
+  insulator.position.y = 0.55;
+  engine.add(plug);
+
+  const flame = new THREE.Mesh(new THREE.SphereGeometry(0.3, 24, 16),
+    new THREE.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0, depthWrite: false }));
+  flame.position.set(x, HEAD_BOTTOM - 0.12, 0);
+  flame.scale.y = 0.5;
+  const light = new THREE.PointLight(0xff8a2a, 0, 4, 2);
+  flame.add(light);
+  engine.add(flame);
+  flames.push({ flame, light });
+});
+
+// Nockenwellen (drehen mit halber Kurbelwellendrehzahl)
+const cams = [];
+for (const [z, mat, peak] of [[-VALVE_Z, intakeMat, 450], [VALVE_Z, exhaustMat, 270]]) {
+  const cam = new THREE.Group();
+  cam.position.set(0, CAM_Y, z);
+  mesh(xCyl(0.06, 4.6), darkSteel, cam);
+  CYL_X.forEach((x, i) => {
+    // Nocken so ausrichten, dass er beim Ventilhubmaximum nach unten zeigt
+    const psi = THREE.MathUtils.degToRad(180 - (FIRE_OFFSET[i] + peak) / 2);
+    const lobe = mesh(xCyl(0.1, 0.14), mat, cam);
+    lobe.scale.set(1, 1, 0.75);
+    lobe.position.set(x, Math.cos(psi) * 0.04, Math.sin(psi) * 0.04);
+    lobe.rotation.x = psi;
+  });
+  const sprocket = mesh(xCyl(0.3, 0.06, 40), darkSteel, cam);
+  sprocket.position.x = -2.5;
+  engine.add(cam);
+  cams.push(cam);
+}
+
+// ---------- Gehäuse (transparent) ----------
+const housing = new THREE.Group();
+engine.add(housing);
+const blockMat = glass(0x9fb3c8, 0.1);
+const block = new THREE.Mesh(new THREE.BoxGeometry(4.9, 3.0, 1.5), blockMat);
+block.position.y = 0.92;
+housing.add(block);
+const head = new THREE.Mesh(new THREE.BoxGeometry(4.9, 1.0, 1.5), glass(0x8899aa, 0.12));
+head.position.y = HEAD_BOTTOM + 0.5;
+housing.add(head);
+const pan = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.6, 1.3), glass(0x556070, 0.18));
+pan.position.y = -0.88;
+housing.add(pan);
+CYL_X.forEach((x) => {
+  const bore = new THREE.Mesh(new THREE.CylinderGeometry(BORE + 0.02, BORE + 0.02, 1.55, 48, 1, true), glass(0xc8d8ea, 0.13));
+  bore.position.set(x, HEAD_BOTTOM - 0.775, 0);
+  housing.add(bore);
+});
+housing.add(new THREE.LineSegments(new THREE.EdgesGeometry(block.geometry),
+  new THREE.LineBasicMaterial({ color: 0x9fb3c8, transparent: true, opacity: 0.3 })).translateY(0.92));
+housing.add(new THREE.LineSegments(new THREE.EdgesGeometry(head.geometry),
+  new THREE.LineBasicMaterial({ color: 0x9fb3c8, transparent: true, opacity: 0.3 })).translateY(HEAD_BOTTOM + 0.5));
+
+// ---------- Takte ----------
+const STROKES = [
+  { name: 'Arbeiten',   color: 0xff6a2a },
+  { name: 'Ausstoßen',  color: 0x8a8f99 },
+  { name: 'Ansaugen',   color: 0x5aa0ff },
+  { name: 'Verdichten', color: 0xf0d050 },
+];
+const hex = c => '#' + c.toString(16).padStart(6, '0');
+const phasesTable = document.getElementById('phases');
+const phaseCells = CYL_X.map((_, i) => {
+  const tr = phasesTable.insertRow();
+  tr.insertCell().textContent = `Zylinder ${i + 1}`;
+  const td = tr.insertCell();
+  return td;
+});
+
+const valveLift = (cycle, open, close) => {
+  if (cycle < open || cycle > close) return 0;
+  return Math.sin((cycle - open) / (close - open) * Math.PI);
+};
+
+function update(thetaDeg) {
+  const theta = THREE.MathUtils.degToRad(thetaDeg);
+  crank.rotation.x = theta;
+  cams.forEach(c => c.rotation.x = theta / 2);
+
+  CYL_X.forEach((x, i) => {
+    const cycle = THREE.MathUtils.euclideanModulo(thetaDeg - FIRE_OFFSET[i], 720);
+    const a = THREE.MathUtils.degToRad(cycle);
+    // Kurbeltrieb: Kurbelzapfen P, Kolbenbolzen Q
+    const py = R * Math.cos(a), pz = R * Math.sin(a);
+    const qy = py + Math.sqrt(L * L - pz * pz);
+    pistons[i].position.y = qy;
+    rods[i].position.set(x, py, pz);
+    rods[i].rotation.x = Math.atan2(-pz, qy - py);
+
+    // Gas-Säule zwischen Kolbenboden und Zylinderkopf
+    const top = qy + PISTON_TOP;
+    const gas = gases[i];
+    gas.scale.y = HEAD_BOTTOM - top;
+    gas.position.y = (HEAD_BOTTOM + top) / 2;
+    const stroke = STROKES[Math.floor(cycle / 180)];
+    gas.material.color.setHex(stroke.color);
+    gas.material.opacity = stroke.name === 'Arbeiten' ? 0.25 + 0.35 * (1 - cycle / 180) : 0.3;
+
+    // Ventile (mit etwas Überschneidung)
+    valves[i].exhaust.position.y = HEAD_BOTTOM - MAX_LIFT * valveLift(cycle, 160, 380);
+    valves[i].intake.position.y = HEAD_BOTTOM - MAX_LIFT * valveLift((cycle + 20) % 720, 360, 580);
+
+    // Zündung / Verbrennung
+    const burn = cycle < 70 ? 1 - cycle / 70 : (cycle > 714 ? 1 : 0);
+    flames[i].flame.material.opacity = 0.85 * burn;
+    flames[i].flame.scale.setScalar(0.4 + 0.8 * (1 - burn)).setY(0.5);
+    flames[i].light.intensity = 6 * burn;
+
+    phaseCells[i].innerHTML = `<span class="dot" style="background:${hex(stroke.color)}"></span>${stroke.name}`;
+  });
+  angleEl.textContent = `${Math.floor(THREE.MathUtils.euclideanModulo(thetaDeg, 720))}°`;
+}
+
+// ---------- UI ----------
+const rpmEl = document.getElementById('rpm'), rpmVal = document.getElementById('rpmVal');
+const angleEl = document.getElementById('angle');
+const playBtn = document.getElementById('play');
+let rpm = +rpmEl.value, playing = true, thetaDeg = 0;
+rpmEl.oninput = () => { rpm = +rpmEl.value; rpmVal.textContent = rpm; };
+playBtn.onclick = () => { playing = !playing; playBtn.textContent = playing ? 'Pause' : 'Start'; };
+document.getElementById('step').onclick = () => { thetaDeg += 10; update(thetaDeg); };
+document.getElementById('showBlock').onchange = e => housing.visible = e.target.checked;
+document.getElementById('showGas').onchange = e => gases.forEach(g => g.visible = e.target.checked);
+document.getElementById('autoRotate').onchange = e => controls.autoRotate = e.target.checked;
+document.getElementById('toggle').onclick = () => {
+  const p = document.getElementById('panel');
+  p.classList.toggle('collapsed');
+  document.getElementById('toggle').textContent = p.classList.contains('collapsed') ? '▴' : '▾';
+};
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (playing) thetaDeg += rpm / 60 * 360 * dt;
+  update(thetaDeg);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
